@@ -2,20 +2,32 @@ import datetime
 import os
 import pandas as pd
 import requests
-from schedule import ottieni_prossime_partite
-from team_analytics import analisi_matchup_squadre
-from player_analytics import analizza_profilo_giocatore
+
+# Configurazione sessione globale per superare i blocchi di stats.nba.com
+session = requests.Session()
+session.headers.update({
+    'Host': 'stats.nba.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'X-NewRelic-ID': 'px3BWV5TCBABU1ZBAgUHNWU=',
+    'Referer': 'https://www.nba.com/',
+    'Connection': 'keep-alive',
+})
+
+from nba_api.stats.endpoints import leaguegamefinder
 
 # ==========================================
 # CONFIGURAZIONE NOTIFICHE TELEGRAM
 # ==========================================
-TELEGRAM_TOKEN = os.getenv("8874279866:AAGg-rhWquOq3IAZtQ-zNFUIUUjgvHBRmF8")
-TELEGRAM_CHAT_ID = os.getenv("270457061")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def invia_telegram(messaggio):
     """Invia un messaggio formattato al tuo bot Telegram."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Attenzione: TELEGRAM_TOKEN o TELEGRAM_CHAT_ID non presenti nelle variabili d'ambiente.")
+        print("⚠️ Attenzione: TELEGRAM_TOKEN o TELEGRAM_CHAT_ID non trovati nelle variabili d'ambiente.")
         return
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -26,11 +38,11 @@ def invia_telegram(messaggio):
     }
     
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code == 200:
             print("✅ Notifica Telegram inviata con successo!")
         else:
-            print(f"❌ Errore Telegram ({response.status_code}): {response.text}")
+            print(f"❌ Errore Telegram ({res.status_code}): {res.text}")
     except Exception as e:
         print(f"❌ Errore di connessione a Telegram: {e}")
 
@@ -38,32 +50,33 @@ def invia_telegram(messaggio):
 # ESECUZIONE REPORT GIORNALIERO AUTOMATICO
 # ==========================================
 def report_giornaliero_automatico():
-    # 1. Recupera la data di oggi
     oggi = datetime.datetime.now().strftime("%Y-%m-%d")
     print("==========================================")
     print(f"   AVVIO ANALISI AUTOMATICA DAILY - {oggi}")
     print("==========================================")
 
-    # Invia notifica di inizio esecuzione su Telegram
+    # Invia notifica di avvio su Telegram
     invia_telegram(f"🚀 **Avvio Analisi NBA Daily** - `{oggi}`")
 
-    # 2. Scarica le partite della stagione
-    df_cal = ottieni_prossime_partite("2026-27")
+    # Recupero dati NBA protetto da try/except
+    df_cal = pd.DataFrame()
+    try:
+        game_finder = leaguegamefinder.LeagueGameFinder(
+            season_nullable="2026-27",
+            proxy=None,
+            timeout=45
+        )
+        df_cal = game_finder.get_data_frames()[0]
+    except Exception as e:
+        print(f"⚠️ Impossibile collegarsi ai server NBA: {e}")
 
+    # Gestione esito download dati
     if df_cal.empty:
-        print("⚠️ Nessun dato a calendario disponibile per oggi.")
-        invia_telegram("⚠️ **NBA Bot**: Nessuna partita a calendario trovata per la data odierna.")
+        print("⚠️ Nessun dato a calendario disponibile o timeout API NBA.")
+        invia_telegram("⚠️ **NBA Bot**: Server NBA temporaneamente offline o nessun dato presente a calendario.")
         return
 
-    # 3. Filtra le partite in programma oggi (o le prossime imminenti)
     print(f"Analisi di {len(df_cal)} partite trovate a calendario...")
-    
-    # -------------------------------------------------------------
-    # LOGICA DI ANALISI MATCHUP E GIOCATORI
-    # -------------------------------------------------------------
-    # Esempio di invio report finale / Value Bet trovate:
-    # report_finale = "🔥 **VALUE BET TROVATA!**\nPartita: ...\nQuota: ..."
-    # invia_telegram(report_finale)
 
     print("==========================================")
     print("   ANALISI COMPLETATA CON SUCCESSO")

@@ -88,8 +88,8 @@ def run():
                 f"📅 *Rilevato il:* {event['data_rilevamento']}\n\n"
                 f"💡 *Azione HORECA:* Contattare la Pro Loco o il Comitato Organizzatore."
             )
-            # Decommentare la riga sotto dopo aver impostato il Bot Token Telegram
-            # send_telegram_message(msg)
+            # ASSICURATI CHE NON CI SIA IL '#' DAVANTI A QUESTA RIGA:
+            send_telegram_message(msg)
             print(f"Notifica inviata per: {event['titolo']}")
 
         # Salva i nuovi eventi nello storico CSV

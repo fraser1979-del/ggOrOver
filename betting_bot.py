@@ -4,10 +4,10 @@ import pandas as pd
 import numpy as np
 from scipy.stats import poisson
 
-# Configurazione API
-FOOTBALL_API_KEY = "LA_TUA_API_KEY_FOOTBALL"
-TELEGRAM_BOT_TOKEN = "IL_TUO_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "IL_TUO_TELEGRAM_CHAT_ID"
+# Configurazione API (legge dai Secrets di GitHub o usa le stringhe locali se eseguito in locale)
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "LA_TUA_API_KEY_LOCAL")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "IL_TUO_TELEGRAM_BOT_TOKEN_LOCAL")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "IL_TUO_TELEGRAM_CHAT_ID_LOCAL")
 
 BASE_URL = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": FOOTBALL_API_KEY}
@@ -21,7 +21,7 @@ LEAGUES = {
     "SB": "🇮🇹 Serie B"
 }
 
-PROB_THRESHOLD = 0.65  # 65%
+PROB_THRESHOLD = 0.65  # Soglia del 65%
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -30,7 +30,9 @@ def send_telegram_message(message):
         "text": message,
         "parse_mode": "Markdown"
     }
-    requests.post(url, json=payload)
+    response = requests.post(url, json=payload)
+    if response.status_code != 200:
+        print(f"❌ Errore invio Telegram ({response.status_code}): {response.text}")
 
 def get_fixtures_and_standings(league_code):
     url_standings = f"{BASE_URL}/competitions/{league_code}/standings"
@@ -128,7 +130,9 @@ def run_automation():
         send_telegram_message(full_message)
         print("✅ Segnali inviati con successo su Telegram!")
     else:
-        print("Nessun segnale ad alta probabilità trovato per oggi.")
+        # Messaggio inviato anche se nessuna gara supera il 65% per conferma di funzionamento
+        send_telegram_message("🤖 *Bot Pronostici*: Scansione completata! Nessuna partita programmata supera la soglia del 65%.")
+        print("Nessun segnale ad alta probabilità trovato. Inviata notifica di riepilogo.")
 
 if __name__ == "__main__":
     run_automation()

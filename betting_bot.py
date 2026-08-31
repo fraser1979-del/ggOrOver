@@ -5,7 +5,7 @@ from scipy.stats import poisson
 from datetime import datetime
 import pandas as pd
 
-# Configurazione API
+# Configurazione API (recuperate dalle variabili d'ambiente o inserite manualmente)
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "INSERISCI_QUI_LA_TUA_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "INSERISCI_QUI_IL_TUO_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "INSERISCI_QUI_IL_TUO_CHAT_ID")
@@ -33,7 +33,7 @@ THRESHOLDS = {
 }
 
 def send_telegram_message(message):
-    """Invia un messaggio Telegram senza formattazione speciale."""
+    """Invia un messaggio di testo su Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -43,8 +43,23 @@ def send_telegram_message(message):
     if response.status_code != 200:
         print(f"❌ Errore invio Telegram ({response.status_code}): {response.text}")
 
+def send_telegram_document(file_path):
+    """Invia il file Excel allegato direttamente nella chat di Telegram."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+    try:
+        with open(file_path, "rb") as doc:
+            files = {"document": doc}
+            data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "caption": "📊 Ecco il file Excel aggiornato con lo storico e le value bet di oggi!"
+            }
+            requests.post(url, data=data, files=files)
+            print("📎 File Excel allegato ed inviato con successo su Telegram!")
+    except Exception as e:
+        print(f"❌ Errore durante l'invio del file Excel su Telegram: {e}")
+
 def save_to_excel(excel_records):
-    """Salva o aggiorna il file Excel con i nuovi segnali identificati."""
+    """Salva o aggiorna il file Excel e lo invia automaticamente su Telegram."""
     if not excel_records:
         return
 
@@ -54,15 +69,18 @@ def save_to_excel(excel_records):
         try:
             existing_df = pd.read_excel(EXCEL_FILE)
             combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-            # Rimuove eventuali righe duplicate basandosi su Partita, Mercato e Data
+            # Rimuove righe duplicate basandosi su Data, Partita e Mercato
             combined_df.drop_duplicates(subset=["Data_Scansione", "Partita", "Mercato"], keep="last", inplace=True)
             combined_df.to_excel(EXCEL_FILE, index=False)
-            print(f"📊 Aggiornato il file Excel: {EXCEL_FILE}")
+            print(f"📊 Aggiornato il file Excel locale: {EXCEL_FILE}")
         except Exception as e:
             print(f"❌ Errore durante l'aggiornamento dell'Excel: {e}")
     else:
         new_df.to_excel(EXCEL_FILE, index=False)
         print(f"📊 Creato nuovo file Excel: {EXCEL_FILE}")
+
+    # Invio automatico del file generato/aggiornato su Telegram
+    send_telegram_document(EXCEL_FILE)
 
 def get_fixtures_and_standings(league_code):
     """Recupera la classifica e le partite programmate per la lega specificata."""
@@ -93,7 +111,7 @@ def parse_form_factor(form_string):
     return 0.85 + (points / 3.0) * 0.30
 
 def calculate_team_stats(standings_data):
-    """Estrae le metriche di attacco/difesa per ciascuna squadra."""
+    """Estrae le metriche di attacco/difesa ponderate per ciascuna squadra."""
     if 'standings' not in standings_data or not standings_data['standings']:
         return None, 0, 0
         
@@ -138,6 +156,7 @@ def calculate_team_stats(standings_data):
     return stats, avg_goals_per_team, avg_goals_per_team
 
 def dixon_coles_adjustment(h, a, l_home, l_away, rho=-0.13):
+    """Applica il correttivo di Dixon-Coles per punteggi a bassissimo numero di gol."""
     if h == 0 and a == 0:
         return 1 - (l_home * l_away * rho)
     elif h == 0 and a == 1:
@@ -149,6 +168,7 @@ def dixon_coles_adjustment(h, a, l_home, l_away, rho=-0.13):
     return 1.0
 
 def predict_match(home_stats, away_stats, avg_home_g, avg_away_g):
+    """Calcola le probabilità bivariate dei mercati Over e Goal/Goal."""
     lambda_home = home_stats['att_home'] * away_stats['def_away'] * avg_home_g
     lambda_away = away_stats['att_away'] * home_stats['def_home'] * avg_away_g
     
@@ -262,16 +282,16 @@ def run_automation():
             
     print(f"\n📊 Scansione completata. Partite analizzate: {total_matches_checked}")
     
-    # Invio su Telegram
+    # Invia notifiche di testo su Telegram
     if signals:
         send_telegram_message(f"🚨 VALUE BET STATISTICHE TROVATE: {len(signals)} 🚨")
         for msg in signals:
             send_telegram_message(msg)
-        print(f"✅ {len(signals)} notifiche inviate con successo su Telegram!")
+        print(f"✅ {len(signals)} notifiche di testo inviate su Telegram!")
     else:
         send_telegram_message(f"🤖 Bot Pronostici: Scansione di {total_matches_checked} partite completata. Nessun segnale sopra le soglie.")
     
-    # Salvataggio automatico su file Excel
+    # Salva il file Excel locale e invia l'allegato su Telegram
     save_to_excel(excel_records)
 
 if __name__ == "__main__":

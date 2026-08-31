@@ -2,8 +2,10 @@ import os
 import requests
 import numpy as np
 from scipy.stats import poisson
+from datetime import datetime
+import pandas as pd
 
-# Configurazione API (recupera le variabili d'ambiente se impostate, altrimenti usa i valori di default)
+# Configurazione API
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "INSERISCI_QUI_LA_TUA_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "INSERISCI_QUI_IL_TUO_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "INSERISCI_QUI_IL_TUO_CHAT_ID")
@@ -11,13 +13,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "INSERISCI_QUI_IL_TUO_CHAT_ID")
 BASE_URL = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": FOOTBALL_API_KEY}
 
+# Nome del file Excel in cui salvare lo storico
+EXCEL_FILE = "storico_scommesse.xlsx"
+
 # Leghe principali supportate dal piano FREE di Football-Data.org
 LEAGUES = {
-    "PL": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
-    "SA": "🇮🇹 Serie A",
-    "PD": "🇪🇸 La Liga",
-    "FL1": "🇫🇷 Ligue 1",
-    "BL1": "🇩🇪 Bundesliga"
+    "PL": "Premier League",
+    "SA": "Serie A",
+    "PD": "La Liga",
+    "FL1": "Ligue 1",
+    "BL1": "Bundesliga"
 }
 
 # Soglie di probabilità per generare i segnali
@@ -28,7 +33,7 @@ THRESHOLDS = {
 }
 
 def send_telegram_message(message):
-    """Invia un messaggio Telegram senza formattazione speciale per evitare errori di parsing."""
+    """Invia un messaggio Telegram senza formattazione speciale."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -37,6 +42,27 @@ def send_telegram_message(message):
     response = requests.post(url, json=payload)
     if response.status_code != 200:
         print(f"❌ Errore invio Telegram ({response.status_code}): {response.text}")
+
+def save_to_excel(excel_records):
+    """Salva o aggiorna il file Excel con i nuovi segnali identificati."""
+    if not excel_records:
+        return
+
+    new_df = pd.DataFrame(excel_records)
+
+    if os.path.exists(EXCEL_FILE):
+        try:
+            existing_df = pd.read_excel(EXCEL_FILE)
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            # Rimuove eventuali righe duplicate basandosi su Partita, Mercato e Data
+            combined_df.drop_duplicates(subset=["Data_Scansione", "Partita", "Mercato"], keep="last", inplace=True)
+            combined_df.to_excel(EXCEL_FILE, index=False)
+            print(f"📊 Aggiornato il file Excel: {EXCEL_FILE}")
+        except Exception as e:
+            print(f"❌ Errore durante l'aggiornamento dell'Excel: {e}")
+    else:
+        new_df.to_excel(EXCEL_FILE, index=False)
+        print(f"📊 Creato nuovo file Excel: {EXCEL_FILE}")
 
 def get_fixtures_and_standings(league_code):
     """Recupera la classifica e le partite programmate per la lega specificata."""
@@ -112,7 +138,6 @@ def calculate_team_stats(standings_data):
     return stats, avg_goals_per_team, avg_goals_per_team
 
 def dixon_coles_adjustment(h, a, l_home, l_away, rho=-0.13):
-    """Applicazione correzione Dixon-Coles per punteggi bassi (0-0, 1-0, 0-1, 1-1)."""
     if h == 0 and a == 0:
         return 1 - (l_home * l_away * rho)
     elif h == 0 and a == 1:
@@ -124,7 +149,6 @@ def dixon_coles_adjustment(h, a, l_home, l_away, rho=-0.13):
     return 1.0
 
 def predict_match(home_stats, away_stats, avg_home_g, avg_away_g):
-    """Calcola la matrice di probabilità di Poisson con correzione Dixon-Coles."""
     lambda_home = home_stats['att_home'] * away_stats['def_away'] * avg_home_g
     lambda_away = away_stats['att_away'] * home_stats['def_home'] * avg_away_g
     
@@ -157,7 +181,9 @@ def predict_match(home_stats, away_stats, avg_home_g, avg_away_g):
 
 def run_automation():
     signals = []
+    excel_records = []
     total_matches_checked = 0
+    today_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     for league_code, league_name in LEAGUES.items():
         try:
@@ -180,12 +206,48 @@ def run_automation():
                     pred = predict_match(stats[h_id], stats[a_id], avg_home_g, avg_away_g)
                     
                     high_prob_markets = []
+                    
+                    # Over 1.5
                     if pred['OV_1.5'] >= (THRESHOLDS['OV_1.5'] * 100):
                         high_prob_markets.append(f"Over 1.5: {pred['OV_1.5']}%")
+                        excel_records.append({
+                            "Data_Scansione": today_str,
+                            "Campionato": league_name,
+                            "Partita": f"{match['homeTeam']['name']} vs {match['awayTeam']['name']}",
+                            "xG_Casa": pred['xG_Home'],
+                            "xG_Ospite": pred['xG_Away'],
+                            "Mercato": "Over 1.5",
+                            "Probabilita_%": pred['OV_1.5'],
+                            "Quota_Minima_Equa": round(100 / pred['OV_1.5'], 2)
+                        })
+                        
+                    # Over 2.5
                     if pred['OV_2.5'] >= (THRESHOLDS['OV_2.5'] * 100):
                         high_prob_markets.append(f"Over 2.5: {pred['OV_2.5']}%")
+                        excel_records.append({
+                            "Data_Scansione": today_str,
+                            "Campionato": league_name,
+                            "Partita": f"{match['homeTeam']['name']} vs {match['awayTeam']['name']}",
+                            "xG_Casa": pred['xG_Home'],
+                            "xG_Ospite": pred['xG_Away'],
+                            "Mercato": "Over 2.5",
+                            "Probabilita_%": pred['OV_2.5'],
+                            "Quota_Minima_Equa": round(100 / pred['OV_2.5'], 2)
+                        })
+                        
+                    # Goal/Goal
                     if pred['GG'] >= (THRESHOLDS['GG'] * 100):
                         high_prob_markets.append(f"Goal/Goal: {pred['GG']}%")
+                        excel_records.append({
+                            "Data_Scansione": today_str,
+                            "Campionato": league_name,
+                            "Partita": f"{match['homeTeam']['name']} vs {match['awayTeam']['name']}",
+                            "xG_Casa": pred['xG_Home'],
+                            "xG_Ospite": pred['xG_Away'],
+                            "Mercato": "Goal/Goal",
+                            "Probabilita_%": pred['GG'],
+                            "Quota_Minima_Equa": round(100 / pred['GG'], 2)
+                        })
                         
                     if high_prob_markets:
                         match_str = (
@@ -198,18 +260,19 @@ def run_automation():
         except Exception as e:
             print(f"❌ Errore nella lega {league_name}: {e}")
             
-    print(f"\n📊 Scansione completata. Partite analizzate con successo: {total_matches_checked}")
+    print(f"\n📊 Scansione completata. Partite analizzate: {total_matches_checked}")
     
+    # Invio su Telegram
     if signals:
         send_telegram_message(f"🚨 VALUE BET STATISTICHE TROVATE: {len(signals)} 🚨")
-        
         for msg in signals:
             send_telegram_message(msg)
-            
         print(f"✅ {len(signals)} notifiche inviate con successo su Telegram!")
     else:
         send_telegram_message(f"🤖 Bot Pronostici: Scansione di {total_matches_checked} partite completata. Nessun segnale sopra le soglie.")
-        print("Nessun segnale ad alta probabilità trovato.")
+    
+    # Salvataggio automatico su file Excel
+    save_to_excel(excel_records)
 
 if __name__ == "__main__":
     run_automation()

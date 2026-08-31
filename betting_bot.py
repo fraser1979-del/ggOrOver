@@ -1,56 +1,45 @@
 import os
 import requests
-import pandas as pd
 import numpy as np
 from scipy.stats import poisson
 
-# Configurazione API
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "LA_TUA_API_KEY_LOCAL")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "IL_TUO_TELEGRAM_BOT_TOKEN_LOCAL")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "IL_TUO_TELEGRAM_CHAT_ID_LOCAL")
+# Configurazione API (recupera le variabili d'ambiente se impostate, altrimenti usa i valori di default)
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "INSERISCI_QUI_LA_TUA_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "INSERISCI_QUI_IL_TUO_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "INSERISCI_QUI_IL_TUO_CHAT_ID")
 
 BASE_URL = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": FOOTBALL_API_KEY}
 
+# Leghe principali supportate dal piano FREE di Football-Data.org
 LEAGUES = {
-    # Inghilterra
     "PL": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League",
-    "ELC": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Championship",
-    "EL1": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 League One",
-    "EL2": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 League Two",
-    # Italia
     "SA": "🇮🇹 Serie A",
-    "SB": "🇮🇹 Serie B",
-    # Spagna
     "PD": "🇪🇸 La Liga",
-    "SD": "🇪🇸 Segunda División",
-    # Francia
     "FL1": "🇫🇷 Ligue 1",
-    "FL2": "🇫🇷 Ligue 2",
-    # Germania
-    "BL1": "🇩🇪 Bundesliga",
-    "BL2": "🇩🇪 2. Bundesliga"
+    "BL1": "🇩🇪 Bundesliga"
 }
 
-# Soglie di probabilità calibrate per mercato
+# Soglie di probabilità per generare i segnali
 THRESHOLDS = {
-    'OV_1.5': 0.70,  # 70% per Over 1.5 (evento ad alta frequenza)
-    'OV_2.5': 0.55,  # 55% per Over 2.5 (ottima soglia statistica)
-    'GG':     0.55   # 55% per Goal/Goal
+    'OV_1.5': 0.65,
+    'OV_2.5': 0.50,
+    'GG':     0.50
 }
 
 def send_telegram_message(message):
+    """Invia un messaggio Telegram senza formattazione speciale per evitare errori di parsing."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
+        "text": message
     }
     response = requests.post(url, json=payload)
     if response.status_code != 200:
         print(f"❌ Errore invio Telegram ({response.status_code}): {response.text}")
 
 def get_fixtures_and_standings(league_code):
+    """Recupera la classifica e le partite programmate per la lega specificata."""
     url_standings = f"{BASE_URL}/competitions/{league_code}/standings"
     url_matches = f"{BASE_URL}/competitions/{league_code}/matches?status=SCHEDULED"
     res_s = requests.get(url_standings, headers=HEADERS).json()
@@ -58,13 +47,9 @@ def get_fixtures_and_standings(league_code):
     return res_s, res_m
 
 def parse_form_factor(form_string):
-    """
-    Calcola un moltiplicatore di forma recente (ultime 5 gare).
-    W = 3, D = 1, L = 0. Media ponderata normalizzata.
-    """
+    """Calcola un moltiplicatore di forma basato sugli ultimi 5 risultati."""
     if not form_string:
         return 1.0
-    
     results = form_string.split(',')[-5:]
     if not results:
         return 1.0
@@ -82,44 +67,52 @@ def parse_form_factor(form_string):
     return 0.85 + (points / 3.0) * 0.30
 
 def calculate_team_stats(standings_data):
+    """Estrae le metriche di attacco/difesa per ciascuna squadra."""
+    if 'standings' not in standings_data or not standings_data['standings']:
+        return None, 0, 0
+        
     table = standings_data['standings'][0]['table']
     
-    total_home_goals = sum(t['home']['goalsFor'] for t in table)
-    total_away_goals = sum(t['away']['goalsFor'] for t in table)
-    total_home_matches = sum(t['home']['playedGames'] for t in table)
-    total_away_matches = sum(t['away']['playedGames'] for t in table)
+    total_goals = sum(t.get('goalsFor', 0) for t in table)
+    total_matches = sum(t.get('playedGames', 0) for t in table)
     
-    if total_home_matches == 0 or total_away_matches == 0:
+    if total_matches == 0:
         return None, 0, 0
     
-    avg_home_goals = total_home_goals / total_home_matches
-    avg_away_goals = total_away_goals / total_away_matches
+    avg_goals_per_team = total_goals / total_matches
     
     stats = {}
     for team in table:
         t_id = team['team']['id']
-        h_played = team['home']['playedGames']
-        a_played = team['away']['playedGames']
+        played = team.get('playedGames', 0)
         
-        if h_played == 0 or a_played == 0:
+        if played == 0:
             continue
             
         form_multiplier = parse_form_factor(team.get('form', ''))
         
+        h_data = team.get('home', {})
+        a_data = team.get('away', {})
+        
+        h_played = h_data.get('playedGames', played / 2) if h_data.get('playedGames', 0) > 0 else (played / 2)
+        a_played = a_data.get('playedGames', played / 2) if a_data.get('playedGames', 0) > 0 else (played / 2)
+        
+        goals_for_h = h_data.get('goalsFor', team.get('goalsFor', 0) / 2)
+        goals_against_h = h_data.get('goalsAgainst', team.get('goalsAgainst', 0) / 2)
+        goals_for_a = a_data.get('goalsFor', team.get('goalsFor', 0) / 2)
+        goals_against_a = a_data.get('goalsAgainst', team.get('goalsAgainst', 0) / 2)
+        
         stats[t_id] = {
             'name': team['team']['name'],
-            'att_home': ((team['home']['goalsFor'] / h_played) / avg_home_goals) * form_multiplier,
-            'def_home': ((team['home']['goalsAgainst'] / h_played) / avg_away_goals) / form_multiplier,
-            'att_away': ((team['away']['goalsFor'] / a_played) / avg_away_goals) * form_multiplier,
-            'def_away': ((team['away']['goalsAgainst'] / a_played) / avg_home_goals) / form_multiplier
+            'att_home': ((goals_for_h / max(h_played, 1)) / avg_goals_per_team) * form_multiplier,
+            'def_home': ((goals_against_h / max(h_played, 1)) / avg_goals_per_team) / form_multiplier,
+            'att_away': ((goals_for_a / max(a_played, 1)) / avg_goals_per_team) * form_multiplier,
+            'def_away': ((goals_against_a / max(a_played, 1)) / avg_goals_per_team) / form_multiplier
         }
-    return stats, avg_home_goals, avg_away_goals
+    return stats, avg_goals_per_team, avg_goals_per_team
 
 def dixon_coles_adjustment(h, a, l_home, l_away, rho=-0.13):
-    """
-    Applica il fattore di correzione di Dixon-Coles per bilanciare 
-    la sottostima dei pareggi e dei punteggi bassi (0-0, 1-0, 0-1, 1-1).
-    """
+    """Applicazione correzione Dixon-Coles per punteggi bassi (0-0, 1-0, 0-1, 1-1)."""
     if h == 0 and a == 0:
         return 1 - (l_home * l_away * rho)
     elif h == 0 and a == 1:
@@ -131,6 +124,7 @@ def dixon_coles_adjustment(h, a, l_home, l_away, rho=-0.13):
     return 1.0
 
 def predict_match(home_stats, away_stats, avg_home_g, avg_away_g):
+    """Calcola la matrice di probabilità di Poisson con correzione Dixon-Coles."""
     lambda_home = home_stats['att_home'] * away_stats['def_away'] * avg_home_g
     lambda_away = away_stats['att_away'] * home_stats['def_home'] * avg_away_g
     
@@ -145,15 +139,12 @@ def predict_match(home_stats, away_stats, avg_home_g, avg_away_g):
             
     prob_matrix /= np.sum(prob_matrix)
     
-    # Over 1.5
     prob_under15 = prob_matrix[0,0] + prob_matrix[1,0] + prob_matrix[0,1]
     prob_ov15 = 1 - prob_under15
     
-    # Over 2.5
     prob_under25 = np.sum([prob_matrix[h, a] for h in range(3) for a in range(3) if h + a <= 2])
     prob_ov25 = 1 - prob_under25
     
-    # Goal/Goal
     prob_gg = np.sum(prob_matrix[1:, 1:])
     
     return {
@@ -166,6 +157,7 @@ def predict_match(home_stats, away_stats, avg_home_g, avg_away_g):
 
 def run_automation():
     signals = []
+    total_matches_checked = 0
     
     for league_code, league_name in LEAGUES.items():
         try:
@@ -177,40 +169,46 @@ def run_automation():
             if not stats:
                 continue
                 
-            # Analizziamo le prossime 15 partite in programma per non limitare la scansione
-            upcoming = matches['matches'][:15]
+            upcoming = matches.get('matches', [])[:15]
+            
             for match in upcoming:
                 h_id = match['homeTeam']['id']
                 a_id = match['awayTeam']['id']
                 
                 if h_id in stats and a_id in stats:
+                    total_matches_checked += 1
                     pred = predict_match(stats[h_id], stats[a_id], avg_home_g, avg_away_g)
                     
                     high_prob_markets = []
                     if pred['OV_1.5'] >= (THRESHOLDS['OV_1.5'] * 100):
-                        high_prob_markets.append(f"🟢 *Over 1.5*: {pred['OV_1.5']}%")
+                        high_prob_markets.append(f"Over 1.5: {pred['OV_1.5']}%")
                     if pred['OV_2.5'] >= (THRESHOLDS['OV_2.5'] * 100):
-                        high_prob_markets.append(f"🔥 *Over 2.5*: {pred['OV_2.5']}%")
+                        high_prob_markets.append(f"Over 2.5: {pred['OV_2.5']}%")
                     if pred['GG'] >= (THRESHOLDS['GG'] * 100):
-                        high_prob_markets.append(f"⚽ *Goal/Goal*: {pred['GG']}%")
+                        high_prob_markets.append(f"Goal/Goal: {pred['GG']}%")
                         
                     if high_prob_markets:
                         match_str = (
-                            f"🏆 *{league_name}*\n"
-                            f"⚔️ *{match['homeTeam']['shortName']} vs {match['awayTeam']['shortName']}*\n"
+                            f"🏆 {league_name}\n"
+                            f"⚔️ {match['homeTeam']['name']} vs {match['awayTeam']['name']}\n"
                             f"📊 xG: {pred['xG_Home']} - {pred['xG_Away']}\n"
-                        ) + "\n".join(high_prob_markets)
+                            + "\n".join([f"  • {m}" for m in high_prob_markets])
+                        )
                         signals.append(match_str)
         except Exception as e:
-            print(f"Errore nella lega {league_name}: {e}")
+            print(f"❌ Errore nella lega {league_name}: {e}")
             
+    print(f"\n📊 Scansione completata. Partite analizzate con successo: {total_matches_checked}")
+    
     if signals:
-        header = "🚨 *SEGNALI VALUE BET STATISTICI* 🚨\n___________________________________\n\n"
-        full_message = header + "\n\n___________________________________\n".join(signals)
-        send_telegram_message(full_message)
-        print("✅ Segnali inviati con successo su Telegram!")
+        send_telegram_message(f"🚨 VALUE BET STATISTICHE TROVATE: {len(signals)} 🚨")
+        
+        for msg in signals:
+            send_telegram_message(msg)
+            
+        print(f"✅ {len(signals)} notifiche inviate con successo su Telegram!")
     else:
-        send_telegram_message("🤖 *Bot Pronostici*: Scansione completata! Nessuna partita supera le soglie attuali.")
+        send_telegram_message(f"🤖 Bot Pronostici: Scansione di {total_matches_checked} partite completata. Nessun segnale sopra le soglie.")
         print("Nessun segnale ad alta probabilità trovato.")
 
 if __name__ == "__main__":
